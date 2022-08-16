@@ -1,11 +1,11 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
-use cosmwasm_std::{to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult};
+use cosmwasm_std::{to_binary, Binary, BankMsg, Deps, DepsMut, Env, MessageInfo, Response, StdResult};
 use cw2::set_contract_version;
 
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, GetCountResponse, InstantiateMsg, QueryMsg};
-use crate::state::{State, STATE};
+use crate::msg::{ConfigResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
+use crate::state::{State, CONFIG};
 
 // version info for migration info
 const CONTRACT_NAME: &str = "crates.io:simple-option";
@@ -14,135 +14,347 @@ const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
     deps: DepsMut,
-    _env: Env,
+    //Env contains all of the current info we know about the blockchain state
+    env: Env,
     info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
-    let state = State {
-        count: msg.count,
-        owner: info.sender.clone(),
-    };
-    set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-    STATE.save(deps.storage, &state)?;
+    //If expired, we return a generic contract error, otherwise, we store the state and return a success code:
+    if msg.expires <= env.block.height {
+        return Err(ContractError::OptionExpired {
+            expired: msg.expires,
+        });
+    }
 
-    Ok(Response::new()
-        .add_attribute("method", "instantiate")
-        .add_attribute("owner", info.sender)
-        .add_attribute("count", msg.count.to_string()))
+    let state = State {
+        creator: info.sender.clone(),
+        owner: info.sender.clone(),
+        //collateral is the funds sent by the contract creator.  
+        collateral: info.funds,
+        counter_offer: msg.counter_offer,
+        expires: msg.expires,
+    };
+
+    set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
+    CONFIG.save(deps.storage, &state)?;
+
+    Ok(Response::default())
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn execute(
     deps: DepsMut,
-    _env: Env,
+    env: Env,
     info: MessageInfo,
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
-        ExecuteMsg::Increment {} => try_increment(deps),
-        ExecuteMsg::Reset { count } => try_reset(deps, info, count),
+        ExecuteMsg::Transfer { recipient } => execute_transfer(deps, env, info, recipient),
+        ExecuteMsg::Execute {} => execute_execute(deps, env, info),
+        ExecuteMsg::Burn {} => execute_burn(deps, env, info),
     }
 }
 
-pub fn try_increment(deps: DepsMut) -> Result<Response, ContractError> {
-    STATE.update(deps.storage, |mut state| -> Result<_, ContractError> {
-        state.count += 1;
-        Ok(state)
-    })?;
+pub fn execute_transfer(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    recipient: String,
+) -> Result<Response, ContractError> {
+    // ensure msg sender is the owner
+    let mut state = CONFIG.load(deps.storage)?;
+    if info.sender != state.owner {
+        return Err(ContractError::Unauthorized {});
+    }
 
-    Ok(Response::new().add_attribute("method", "try_increment"))
+    // set new owner on state
+    state.owner = deps.api.addr_validate(&recipient)?;
+    CONFIG.save(deps.storage, &state)?;
+
+    let res =
+        Response::new().add_attributes([("action", "transfer"), ("owner", recipient.as_str())]);
+    Ok(res)
 }
 
-pub fn try_reset(deps: DepsMut, info: MessageInfo, count: i32) -> Result<Response, ContractError> {
-    STATE.update(deps.storage, |mut state| -> Result<_, ContractError> {
-        if info.sender != state.owner {
-            return Err(ContractError::Unauthorized {});
-        }
-        state.count = count;
-        Ok(state)
-    })?;
-    Ok(Response::new().add_attribute("method", "reset"))
+pub fn execute_execute(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+) -> Result<Response, ContractError> {
+    // ensure msg sender is the owner
+    let state = CONFIG.load(deps.storage)?;
+    if info.sender != state.owner {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    // ensure not expired
+    if env.block.height >= state.expires {
+        return Err(ContractError::OptionExpired {
+            expired: state.expires,
+        });
+    }
+
+    // ensure sending proper counter_offer
+    if info.funds != state.counter_offer {
+        return Err(ContractError::CounterOfferMismatch {
+            offer: info.funds,
+            counter_offer: state.counter_offer,
+        });
+    }
+
+    // release counter_offer to creator
+    let mut res = Response::new();
+    res = res.add_message(BankMsg::Send {
+        to_address: state.creator.to_string(),
+        amount: state.counter_offer,
+    });
+
+    // release collateral to sender
+    res = res.add_message(BankMsg::Send {
+        to_address: state.owner.to_string(),
+        amount: state.collateral,
+    });
+
+    // delete the option
+    CONFIG.remove(deps.storage);
+
+    res = res.add_attribute("action", "execute");
+    Ok(res)
 }
 
-#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn execute_burn(deps: DepsMut, env: Env, info: MessageInfo) -> Result<Response, ContractError> {
+    // ensure is expired
+    let state = CONFIG.load(deps.storage)?;
+    if env.block.height < state.expires {
+        return Err(ContractError::OptionNotExpired {
+            expires: state.expires,
+        });
+    }
+
+    // ensure sending proper counter_offer
+    if !info.funds.is_empty() {
+        return Err(ContractError::FundsSentWithBurn {});
+    }
+
+    // release collateral to creator
+    let mut res = Response::new();
+    res = res.add_message(BankMsg::Send {
+        to_address: state.creator.to_string(),
+        amount: state.collateral,
+    });
+
+    // delete the option
+    CONFIG.remove(deps.storage);
+
+    res = res.add_attribute("action", "burn");
+    Ok(res)
+}
+
+#[entry_point]
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
-        QueryMsg::GetCount {} => to_binary(&query_count(deps)?),
+        QueryMsg::Config {} => to_binary(&query_config(deps)?),
     }
 }
 
-fn query_count(deps: Deps) -> StdResult<GetCountResponse> {
-    let state = STATE.load(deps.storage)?;
-    Ok(GetCountResponse { count: state.count })
+fn query_config(deps: Deps) -> StdResult<ConfigResponse> {
+    let state = CONFIG.load(deps.storage)?;
+    Ok(state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-    use cosmwasm_std::{coins, from_binary};
+    use cosmwasm_std::{attr, coins, CosmosMsg};
 
     #[test]
     fn proper_initialization() {
         let mut deps = mock_dependencies();
 
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(1000, "earth"));
+        let msg = InstantiateMsg {
+            counter_offer: coins(40, "ETH"),
+            expires: 100_000,
+        };
+        let info = mock_info("creator", &coins(1, "BTC"));
 
         // we can just call .unwrap() to assert this was a success
         let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
         assert_eq!(0, res.messages.len());
 
         // it worked, let's query the state
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: GetCountResponse = from_binary(&res).unwrap();
-        assert_eq!(17, value.count);
+        let res = query_config(deps.as_ref()).unwrap();
+        assert_eq!(100_000, res.expires);
+        assert_eq!("creator", res.owner.as_str());
+        assert_eq!("creator", res.creator.as_str());
+        assert_eq!(coins(1, "BTC"), res.collateral);
+        assert_eq!(coins(40, "ETH"), res.counter_offer);
     }
 
     #[test]
-    fn increment() {
+    fn transfer() {
         let mut deps = mock_dependencies();
 
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(2, "token"));
-        let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+        let msg = InstantiateMsg {
+            counter_offer: coins(40, "ETH"),
+            expires: 100_000,
+        };
+        let info = mock_info("creator", &coins(1, "BTC"));
 
-        // beneficiary can release it
-        let info = mock_info("anyone", &coins(2, "token"));
-        let msg = ExecuteMsg::Increment {};
-        let _res = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
+        // we can just call .unwrap() to assert this was a success
+        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+        assert_eq!(0, res.messages.len());
 
-        // should increase counter by 1
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: GetCountResponse = from_binary(&res).unwrap();
-        assert_eq!(18, value.count);
-    }
-
-    #[test]
-    fn reset() {
-        let mut deps = mock_dependencies();
-
-        let msg = InstantiateMsg { count: 17 };
-        let info = mock_info("creator", &coins(2, "token"));
-        let _res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-        // beneficiary can release it
-        let unauth_info = mock_info("anyone", &coins(2, "token"));
-        let msg = ExecuteMsg::Reset { count: 5 };
-        let res = execute(deps.as_mut(), mock_env(), unauth_info, msg);
-        match res {
-            Err(ContractError::Unauthorized {}) => {}
-            _ => panic!("Must return unauthorized error"),
+        // random cannot transfer
+        let info = mock_info("anyone", &[]);
+        let err =
+            execute_transfer(deps.as_mut(), mock_env(), info, "anyone".to_string()).unwrap_err();
+        match err {
+            ContractError::Unauthorized {} => {}
+            e => panic!("unexpected error: {}", e),
         }
 
-        // only the original creator can reset the counter
-        let auth_info = mock_info("creator", &coins(2, "token"));
-        let msg = ExecuteMsg::Reset { count: 5 };
-        let _res = execute(deps.as_mut(), mock_env(), auth_info, msg).unwrap();
+        // owner can transfer
+        let info = mock_info("creator", &[]);
+        let res = execute_transfer(deps.as_mut(), mock_env(), info, "someone".to_string()).unwrap();
+        assert_eq!(res.attributes.len(), 2);
+        assert_eq!(res.attributes[0], attr("action", "transfer"));
 
-        // should now be 5
-        let res = query(deps.as_ref(), mock_env(), QueryMsg::GetCount {}).unwrap();
-        let value: GetCountResponse = from_binary(&res).unwrap();
-        assert_eq!(5, value.count);
+        // check updated properly
+        let res = query_config(deps.as_ref()).unwrap();
+        assert_eq!("someone", res.owner.as_str());
+        assert_eq!("creator", res.creator.as_str());
+    }
+
+    #[test]
+    fn execute() {
+        let mut deps = mock_dependencies();
+
+        let amount = coins(40, "ETH");
+        let collateral = coins(1, "BTC");
+        let expires = 100_000;
+        let msg = InstantiateMsg {
+            counter_offer: amount.clone(),
+            expires,
+        };
+        let info = mock_info("creator", &collateral);
+
+        // we can just call .unwrap() to assert this was a success
+        let _ = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+        // set new owner
+        let info = mock_info("creator", &[]);
+        let _ = execute_transfer(deps.as_mut(), mock_env(), info, "owner".to_string()).unwrap();
+
+        // random cannot execute
+        let info = mock_info("creator", &amount);
+        let err = execute_execute(deps.as_mut(), mock_env(), info).unwrap_err();
+        match err {
+            ContractError::Unauthorized {} => {}
+            e => panic!("unexpected error: {}", e),
+        }
+
+        // expired cannot execute
+        let info = mock_info("owner", &amount);
+        let mut env = mock_env();
+        env.block.height = 200_000;
+        let err = execute_execute(deps.as_mut(), env, info).unwrap_err();
+        match err {
+            ContractError::OptionExpired { expired } => assert_eq!(expired, expires),
+            e => panic!("unexpected error: {}", e),
+        }
+
+        // bad counter_offer cannot execute
+        let msg_offer = coins(39, "ETH");
+        let info = mock_info("owner", &msg_offer);
+        let err = execute_execute(deps.as_mut(), mock_env(), info).unwrap_err();
+        match err {
+            ContractError::CounterOfferMismatch {
+                offer,
+                counter_offer,
+            } => {
+                assert_eq!(msg_offer, offer);
+                assert_eq!(amount, counter_offer);
+            }
+            e => panic!("unexpected error: {}", e),
+        }
+
+        // proper execution
+        let info = mock_info("owner", &amount);
+        let res = execute_execute(deps.as_mut(), mock_env(), info).unwrap();
+        assert_eq!(res.messages.len(), 2);
+        assert_eq!(
+            res.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: "creator".into(),
+                amount,
+            })
+        );
+        assert_eq!(
+            res.messages[1].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: "owner".into(),
+                amount: collateral,
+            })
+        );
+
+        // check deleted
+        let _ = query_config(deps.as_ref()).unwrap_err();
+    }
+
+    #[test]
+    fn burn() {
+        let mut deps = mock_dependencies();
+
+        let counter_offer = coins(40, "ETH");
+        let collateral = coins(1, "BTC");
+        let msg_expires = 100_000;
+        let msg = InstantiateMsg {
+            counter_offer: counter_offer.clone(),
+            expires: msg_expires,
+        };
+        let info = mock_info("creator", &collateral);
+
+        // we can just call .unwrap() to assert this was a success
+        let _ = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+        // set new owner
+        let info = mock_info("creator", &[]);
+        let _ = execute_transfer(deps.as_mut(), mock_env(), info, "owner".to_string()).unwrap();
+
+        // non-expired cannot execute
+        let info = mock_info("anyone", &[]);
+        let err = execute_burn(deps.as_mut(), mock_env(), info).unwrap_err();
+        match err {
+            ContractError::OptionNotExpired { expires } => assert_eq!(expires, msg_expires),
+            e => panic!("unexpected error: {}", e),
+        }
+
+        // with funds cannot execute
+        let info = mock_info("anyone", &counter_offer);
+        let mut env = mock_env();
+        env.block.height = 200_000;
+        let err = execute_burn(deps.as_mut(), env, info).unwrap_err();
+        match err {
+            ContractError::FundsSentWithBurn {} => {}
+            e => panic!("unexpected error: {}", e),
+        }
+
+        // expired returns funds
+        let info = mock_info("anyone", &[]);
+        let mut env = mock_env();
+        env.block.height = 200_000;
+        let res = execute_burn(deps.as_mut(), env, info).unwrap();
+        assert_eq!(res.messages.len(), 1);
+        assert_eq!(
+            res.messages[0].msg,
+            CosmosMsg::Bank(BankMsg::Send {
+                to_address: "creator".into(),
+                amount: collateral,
+            })
+        );
+
+        // check deleted
+        let _ = query_config(deps.as_ref()).unwrap_err();
     }
 }
