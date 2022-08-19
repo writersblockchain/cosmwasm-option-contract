@@ -50,7 +50,7 @@ mod test {
 }
 ```
 
-#### msg.rs
+### msg.rs
 
 ```rust
 pub struct InstantiateMsg {
@@ -78,7 +78,7 @@ pub enum QueryMsg {
 pub type ConfigResponse = State;
 ```
 
-#### contract.rs
+### contract.rs
 
 ```rust
 pub fn instantiate(
