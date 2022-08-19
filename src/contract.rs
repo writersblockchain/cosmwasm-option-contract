@@ -189,172 +189,175 @@ mod tests {
         assert_eq!("creator", res.creator.as_str());
         assert_eq!(coins(1, "BTC"), res.collateral);
         assert_eq!(coins(40, "ETH"), res.counter_offer);
-    }
-
-    #[test]
-    fn transfer() {
-        let mut deps = mock_dependencies();
-
-        let msg = InstantiateMsg {
-            counter_offer: coins(40, "ETH"),
-            expires: 100_000,
-        };
-        let info = mock_info("creator", &coins(1, "BTC"));
-
-        // we can just call .unwrap() to assert this was a success
-        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-        assert_eq!(0, res.messages.len());
-
-        // random cannot transfer
-        let info = mock_info("anyone", &[]);
-        let err =
-            execute_transfer(deps.as_mut(), mock_env(), info, "anyone".to_string()).unwrap_err();
-        match err {
-            ContractError::Unauthorized {} => {}
-            e => panic!("unexpected error: {}", e),
-        }
-
-        // owner can transfer
-        let info = mock_info("creator", &[]);
-        let res = execute_transfer(deps.as_mut(), mock_env(), info, "someone".to_string()).unwrap();
-        assert_eq!(res.attributes.len(), 2);
-        assert_eq!(res.attributes[0], attr("action", "transfer"));
-
-        // check updated properly
-        let res = query_config(deps.as_ref()).unwrap();
-        assert_eq!("someone", res.owner.as_str());
-        assert_eq!("creator", res.creator.as_str());
-    }
-
-    #[test]
-    fn execute() {
-        let mut deps = mock_dependencies();
-
-        let amount = coins(40, "ETH");
-        let collateral = coins(1, "BTC");
-        let expires = 100_000;
-        let msg = InstantiateMsg {
-            counter_offer: amount.clone(),
-            expires,
-        };
-        let info = mock_info("creator", &collateral);
-
-        // we can just call .unwrap() to assert this was a success
-        let _ = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-        // set new owner
-        let info = mock_info("creator", &[]);
-        let _ = execute_transfer(deps.as_mut(), mock_env(), info, "owner".to_string()).unwrap();
-
-        // random cannot execute
-        let info = mock_info("creator", &amount);
-        let err = execute_execute(deps.as_mut(), mock_env(), info).unwrap_err();
-        match err {
-            ContractError::Unauthorized {} => {}
-            e => panic!("unexpected error: {}", e),
-        }
-
-        // expired cannot execute
-        let info = mock_info("owner", &amount);
-        let mut env = mock_env();
-        env.block.height = 200_000;
-        let err = execute_execute(deps.as_mut(), env, info).unwrap_err();
-        match err {
-            ContractError::OptionExpired { expired } => assert_eq!(expired, expires),
-            e => panic!("unexpected error: {}", e),
-        }
-
-        // bad counter_offer cannot execute
-        let msg_offer = coins(39, "ETH");
-        let info = mock_info("owner", &msg_offer);
-        let err = execute_execute(deps.as_mut(), mock_env(), info).unwrap_err();
-        match err {
-            ContractError::CounterOfferMismatch {
-                offer,
-                counter_offer,
-            } => {
-                assert_eq!(msg_offer, offer);
-                assert_eq!(amount, counter_offer);
-            }
-            e => panic!("unexpected error: {}", e),
-        }
-
-        // proper execution
-        let info = mock_info("owner", &amount);
-        let res = execute_execute(deps.as_mut(), mock_env(), info).unwrap();
-        assert_eq!(res.messages.len(), 2);
-        assert_eq!(
-            res.messages[0].msg,
-            CosmosMsg::Bank(BankMsg::Send {
-                to_address: "creator".into(),
-                amount,
-            })
-        );
-        assert_eq!(
-            res.messages[1].msg,
-            CosmosMsg::Bank(BankMsg::Send {
-                to_address: "owner".into(),
-                amount: collateral,
-            })
-        );
-
-        // check deleted
-        let _ = query_config(deps.as_ref()).unwrap_err();
-    }
-
-    #[test]
-    fn burn() {
-        let mut deps = mock_dependencies();
-
-        let counter_offer = coins(40, "ETH");
-        let collateral = coins(1, "BTC");
-        let msg_expires = 100_000;
-        let msg = InstantiateMsg {
-            counter_offer: counter_offer.clone(),
-            expires: msg_expires,
-        };
-        let info = mock_info("creator", &collateral);
-
-        // we can just call .unwrap() to assert this was a success
-        let _ = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-
-        // set new owner
-        let info = mock_info("creator", &[]);
-        let _ = execute_transfer(deps.as_mut(), mock_env(), info, "owner".to_string()).unwrap();
-
-        // non-expired cannot execute
-        let info = mock_info("anyone", &[]);
-        let err = execute_burn(deps.as_mut(), mock_env(), info).unwrap_err();
-        match err {
-            ContractError::OptionNotExpired { expires } => assert_eq!(expires, msg_expires),
-            e => panic!("unexpected error: {}", e),
-        }
-
-        // with funds cannot execute
-        let info = mock_info("anyone", &counter_offer);
-        let mut env = mock_env();
-        env.block.height = 200_000;
-        let err = execute_burn(deps.as_mut(), env, info).unwrap_err();
-        match err {
-            ContractError::FundsSentWithBurn {} => {}
-            e => panic!("unexpected error: {}", e),
-        }
-
-        // expired returns funds
-        let info = mock_info("anyone", &[]);
-        let mut env = mock_env();
-        env.block.height = 200_000;
-        let res = execute_burn(deps.as_mut(), env, info).unwrap();
-        assert_eq!(res.messages.len(), 1);
-        assert_eq!(
-            res.messages[0].msg,
-            CosmosMsg::Bank(BankMsg::Send {
-                to_address: "creator".into(),
-                amount: collateral,
-            })
-        );
-
-        // check deleted
-        let _ = query_config(deps.as_ref()).unwrap_err();
+        println!("yo!");
+        
     }
 }
+
+//     #[test]
+//     fn transfer() {
+//         let mut deps = mock_dependencies();
+
+//         let msg = InstantiateMsg {
+//             counter_offer: coins(40, "ETH"),
+//             expires: 100_000,
+//         };
+//         let info = mock_info("creator", &coins(1, "BTC"));
+
+//         // we can just call .unwrap() to assert this was a success
+//         let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+//         assert_eq!(0, res.messages.len());
+
+//         // random cannot transfer
+//         let info = mock_info("anyone", &[]);
+//         let err =
+//             execute_transfer(deps.as_mut(), mock_env(), info, "anyone".to_string()).unwrap_err();
+//         match err {
+//             ContractError::Unauthorized {} => {}
+//             e => panic!("unexpected error: {}", e),
+//         }
+
+//         // owner can transfer
+//         let info = mock_info("creator", &[]);
+//         let res = execute_transfer(deps.as_mut(), mock_env(), info, "someone".to_string()).unwrap();
+//         assert_eq!(res.attributes.len(), 2);
+//         assert_eq!(res.attributes[0], attr("action", "transfer"));
+
+//         // check updated properly
+//         let res = query_config(deps.as_ref()).unwrap();
+//         assert_eq!("someone", res.owner.as_str());
+//         assert_eq!("creator", res.creator.as_str());
+//     }
+
+//     #[test]
+//     fn execute() {
+//         let mut deps = mock_dependencies();
+
+//         let amount = coins(40, "ETH");
+//         let collateral = coins(1, "BTC");
+//         let expires = 100_000;
+//         let msg = InstantiateMsg {
+//             counter_offer: amount.clone(),
+//             expires,
+//         };
+//         let info = mock_info("creator", &collateral);
+
+//         // we can just call .unwrap() to assert this was a success
+//         let _ = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+//         // set new owner
+//         let info = mock_info("creator", &[]);
+//         let _ = execute_transfer(deps.as_mut(), mock_env(), info, "owner".to_string()).unwrap();
+
+//         // random cannot execute
+//         let info = mock_info("creator", &amount);
+//         let err = execute_execute(deps.as_mut(), mock_env(), info).unwrap_err();
+//         match err {
+//             ContractError::Unauthorized {} => {}
+//             e => panic!("unexpected error: {}", e),
+//         }
+
+//         // expired cannot execute
+//         let info = mock_info("owner", &amount);
+//         let mut env = mock_env();
+//         env.block.height = 200_000;
+//         let err = execute_execute(deps.as_mut(), env, info).unwrap_err();
+//         match err {
+//             ContractError::OptionExpired { expired } => assert_eq!(expired, expires),
+//             e => panic!("unexpected error: {}", e),
+//         }
+
+//         // bad counter_offer cannot execute
+//         let msg_offer = coins(39, "ETH");
+//         let info = mock_info("owner", &msg_offer);
+//         let err = execute_execute(deps.as_mut(), mock_env(), info).unwrap_err();
+//         match err {
+//             ContractError::CounterOfferMismatch {
+//                 offer,
+//                 counter_offer,
+//             } => {
+//                 assert_eq!(msg_offer, offer);
+//                 assert_eq!(amount, counter_offer);
+//             }
+//             e => panic!("unexpected error: {}", e),
+//         }
+
+//         // proper execution
+//         let info = mock_info("owner", &amount);
+//         let res = execute_execute(deps.as_mut(), mock_env(), info).unwrap();
+//         assert_eq!(res.messages.len(), 2);
+//         assert_eq!(
+//             res.messages[0].msg,
+//             CosmosMsg::Bank(BankMsg::Send {
+//                 to_address: "creator".into(),
+//                 amount,
+//             })
+//         );
+//         assert_eq!(
+//             res.messages[1].msg,
+//             CosmosMsg::Bank(BankMsg::Send {
+//                 to_address: "owner".into(),
+//                 amount: collateral,
+//             })
+//         );
+
+//         // check deleted
+//         let _ = query_config(deps.as_ref()).unwrap_err();
+//     }
+
+//     #[test]
+//     fn burn() {
+//         let mut deps = mock_dependencies();
+
+//         let counter_offer = coins(40, "ETH");
+//         let collateral = coins(1, "BTC");
+//         let msg_expires = 100_000;
+//         let msg = InstantiateMsg {
+//             counter_offer: counter_offer.clone(),
+//             expires: msg_expires,
+//         };
+//         let info = mock_info("creator", &collateral);
+
+//         // we can just call .unwrap() to assert this was a success
+//         let _ = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
+
+//         // set new owner
+//         let info = mock_info("creator", &[]);
+//         let _ = execute_transfer(deps.as_mut(), mock_env(), info, "owner".to_string()).unwrap();
+
+//         // non-expired cannot execute
+//         let info = mock_info("anyone", &[]);
+//         let err = execute_burn(deps.as_mut(), mock_env(), info).unwrap_err();
+//         match err {
+//             ContractError::OptionNotExpired { expires } => assert_eq!(expires, msg_expires),
+//             e => panic!("unexpected error: {}", e),
+//         }
+
+//         // with funds cannot execute
+//         let info = mock_info("anyone", &counter_offer);
+//         let mut env = mock_env();
+//         env.block.height = 200_000;
+//         let err = execute_burn(deps.as_mut(), env, info).unwrap_err();
+//         match err {
+//             ContractError::FundsSentWithBurn {} => {}
+//             e => panic!("unexpected error: {}", e),
+//         }
+
+//         // expired returns funds
+//         let info = mock_info("anyone", &[]);
+//         let mut env = mock_env();
+//         env.block.height = 200_000;
+//         let res = execute_burn(deps.as_mut(), env, info).unwrap();
+//         assert_eq!(res.messages.len(), 1);
+//         assert_eq!(
+//             res.messages[0].msg,
+//             CosmosMsg::Bank(BankMsg::Send {
+//                 to_address: "creator".into(),
+//                 amount: collateral,
+//             })
+//         );
+
+//         // check deleted
+//         let _ = query_config(deps.as_ref()).unwrap_err();
+//     }
+// }
